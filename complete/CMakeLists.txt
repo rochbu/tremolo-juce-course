@@ -59,6 +59,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   # Sets the Windows VST3 installation location to one
   # that doesn't require elevated permissions
   set_directory_properties(PROPERTIES JUCE_VST3_COPY_DIR "$ENV{LOCALAPPDATA}/Programs/Common/VST3")
+elseif (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  set_directory_properties(PROPERTIES JUCE_VST3_COPY_DIR "$ENV{HOME}/Library/Audio/Plug-ins/VST3")
+  set_directory_properties(PROPERTIES JUCE_AU_COPY_DIR "$ENV{HOME}/Library/Audio/Plug-Ins/Components")
 endif()
 
 # Adds a plugin target.
@@ -88,7 +91,7 @@ juce_add_plugin(
   VST3_AUTO_MANIFEST
     FALSE
   COPY_PLUGIN_AFTER_BUILD
-    FALSE
+    TRUE
 )
 
 # Configures the JUCE sources included in the plugin target.
