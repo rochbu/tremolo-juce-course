@@ -10,29 +10,40 @@ public:
     triangle = 1,
   };
 
-  Tremolo() {
-    for (auto& lfo : lfos) {
-      lfo.setFrequency(5.f /* Hz */, true);
-    }
-  }
+  Tremolo() { setModulationRateHz(5.f, ApplySmoothing::no); }
 
   void prepare(double sampleRate, int expectedMaxFramesPerBlock) {
-    const juce::dsp::ProcessSpec processSpec {
-      .sampleRate = sampleRate,
-      .maximumBlockSize = static_cast<juce::uint32>(expectedMaxFramesPerBlock),
-      .numChannels = 1u,
+    const juce::dsp::ProcessSpec processSpec{
+        .sampleRate = sampleRate,
+        .maximumBlockSize =
+            static_cast<juce::uint32>(expectedMaxFramesPerBlock),
+        .numChannels = 1u,
     };
-
     for (auto& lfo : lfos) {
       lfo.prepare(processSpec);
     }
+
+    lfoTransitionSmoother.reset(sampleRate, 0.025);
   }
 
-  void setLfoWaveform(LfoWaveform waveform) {
+  void setModulationRateHz(
+    float rateHz,
+    ApplySmoothing applySmoothing = ApplySmoothing::yes) noexcept {
+    const auto force = applySmoothing == ApplySmoothing::no;
+    for (auto& lfo : lfos) {
+      lfo.setFrequency(rateHz, force);
+    }
+  }
+
+  void setLfoWaveform(LfoWaveform waveform,
+                      ApplySmoothing applySmoothing = ApplySmoothing::yes) {
     jassert(waveform == LfoWaveform::sine || waveform == LfoWaveform::triangle);
 
     lfoToSet = waveform;
 
+    if (applySmoothing == ApplySmoothing::no) {
+      currentLfo = waveform;
+    }
   }
 
   void process(juce::AudioBuffer<float>& buffer) noexcept {
@@ -42,8 +53,10 @@ public:
 
     // for each frame
     for (const auto frameIndex : std::views::iota(0, buffer.getNumSamples())) {
+      // generate the LFO value
       const auto lfoValue = getNextLfoValue();
-      constexpr auto modulationDepth = 0.4f;
+
+      // calculate the modulation value
       const auto modulationValue = modulationDepth * lfoValue + 1.f;
 
       // for each channel sample in the frame
@@ -52,7 +65,8 @@ public:
         // get the input sample
         const auto inputSample = buffer.getSample(channelIndex, frameIndex);
 
-        const auto outputSample = (1.f - modulationDepth) + (modulationDepth * (0.5f * (lfoValue + 1)));
+        // modulate the sample
+        const auto outputSample = modulationValue * inputSample;
 
         // set the output sample
         buffer.setSample(channelIndex, frameIndex, outputSample);
@@ -67,29 +81,56 @@ public:
   }
 
 private:
-  // You should put class members and private functions here
-  static float triangleFromPhase(float phase) {
-    const auto ft = phase / juce::MathConstants<float>::twoPi;
+  static constexpr auto modulationDepth = 0.4f;
+
+  static float triangle(float phase) {
+    // offset the phase by pi/2 to return 0 if phase equals 0
+    // and match the sine waveform
+    // (otherwise, the waveform starts at 1)
+    const auto offsetPhase = phase - juce::MathConstants<float>::halfPi;
+
+    // Source:
+    // https://thewolfsound.com/sine-saw-square-triangle-pulse-basic-waveforms-in-synthesis/#triangle
+    const auto ft = offsetPhase / juce::MathConstants<float>::twoPi;
     return 4.f * std::abs(ft - std::floor(ft + 0.5f)) - 1.f;
   }
 
-  std::array<juce::dsp::Oscillator<float>, 2u> lfos{
-    juce::dsp::Oscillator<float>{[](auto phase){ return std::sin(phase); }},
-    juce::dsp::Oscillator<float>{[](auto phase){ return triangleFromPhase(phase); }}
-  };
+  void updateLfoWaveform() {
+    if (lfoToSet != currentLfo) {
+      // update the smoother
+      lfoTransitionSmoother.setCurrentAndTargetValue(getNextLfoValue());
 
-  LfoWaveform currentLfo = LfoWaveform::triangle;
-  LfoWaveform lfoToSet = currentLfo;
+      currentLfo = lfoToSet;
+
+      // initiate smoothing
+      lfoTransitionSmoother.setTargetValue(getNextLfoValue());
+    }
+  }
 
   float getNextLfoValue() {
-    // 0 to get just the generated value otherwise it would be added to the input
+    if (lfoTransitionSmoother.isSmoothing()) {
+      return lfoTransitionSmoother.getNextValue();
+    }
+    // the argument is added to the generated sample, thus, we pass in 0
+    // to get just the generated sample
     return lfos[juce::toUnderlyingType(currentLfo)].processSample(0.f);
   }
 
-  void updateLfoWaveform() {
-    if (currentLfo != lfoToSet) {
-      currentLfo = lfoToSet;
-    }
-  }
+  std::array<juce::dsp::Oscillator<float>, 2u> lfos{
+      juce::dsp::Oscillator<float>{[](auto phase) {
+        // start phase is -pi -> change it to 0 to match the mathematical sine
+        return std::sin(phase + juce::MathConstants<float>::pi);
+      }},
+      juce::dsp::Oscillator<float>{triangle}
+  };
+
+  LfoWaveform currentLfo = LfoWaveform::sine;
+  LfoWaveform lfoToSet = currentLfo;
+
+  juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>
+      lfoTransitionSmoother{0.f};
+  std::vector<float> lfoSamples;
+
+
 };
 }  // namespace tremolo
